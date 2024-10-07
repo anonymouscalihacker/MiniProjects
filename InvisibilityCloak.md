@@ -16,6 +16,7 @@ Using [the LTE Router](https://www.amazon.com/dp/B0CJF7KQ3Q/ref=cm_sw_r_as_gl_ap
 Additionally, we will configure a **VPN kill switch** to block internet traffic if the VPN drops, enhancing privacy and security.
 
 **Tip for Work Laptops**: It's best to disable Wi-Fi on your work laptop and use an Ethernet connection from the travel router to your laptop to prevent any Wi-Fi leakage, ensuring a secure setup., regardless of your actual location. Wi-Fi scanning and leakage could give away your actual locaiton.
+
 ---
 
 ## **Video Guides: Setting up WireGuard Server**
