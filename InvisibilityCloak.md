@@ -62,11 +62,19 @@ For example, in Turkey, you can use Turkcell's SIM card and configure as follows
    - **Protocol**: QCM
    - **APN**: internet
    - **Authentication**: NONE (if required, use PAP or CHAP)
+   - **TTL**: 64 (adjust to 65 or 66 if tethering detection occurs)
+
+<img width="601" alt="image" src="https://github.com/user-attachments/assets/3cb3115b-06fd-43d2-906e-16809df3b3cf">
+
 
 Configure the APN settings for T-Mobile:
    - **Protocol**: QCM
    - **APN**: `fast.t-mobile.com`
    - **Authentication**: NONE (if required, use PAP or CHAP)
+   -  **TTL**: 64
+
+See **TTL decection** section below
+
 6. Click **Apply** to save the settings.
 
 ---
@@ -104,7 +112,7 @@ Upload it in the WireGuard Client section.
 
 To prevent tethering detection (e.g., by T-Mobile), modify the TTL (Time to Live) settings:
 
-Navigate to Network > Advanced Settings.
+Navigate to **Internet** > **Cellular Settings**
 Set the TTL value to 64 for both IPv4 and **IPv6`.
 This will help disguise tethering as normal mobile device usage.
 
