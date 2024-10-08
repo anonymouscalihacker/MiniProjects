@@ -50,6 +50,7 @@ Once the server is configured, follow the steps below to configure your **Mudi V
 ## 1. **Configure T-Mobile APN Settings** (must have a pyshical sim card to insert into the Router)
 
 To set up your T-Mobile line on the Mudi V2 router, follow these steps:
+<img width="1243" alt="image" src="https://github.com/user-attachments/assets/08945d7b-f781-4208-bca4-5796f0ee01bd">
 
 1. Access your router’s admin panel by navigating to `192.168.8.1` in a web browser.
 2. Log in with the default credentials.
