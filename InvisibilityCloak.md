@@ -3,7 +3,7 @@
 
 <img width="649" alt="image" src="https://github.com/user-attachments/assets/b133ba59-4a20-4ece-bafc-e4ae23897fd3">
 
-The goal of this project is to have your IP Address and internet location show as your home address on your work or personal laptop / internet device no matter where you are in the world. 
+The goal of this project is to have your IP Address and internet location show as your original home address on your work or personal laptop / internet device no matter where you are in the world. 
 
 This guide provides a step-by-step process to configure a **[ 4G LTE Travel Router ](https://www.amazon.com/dp/B0CJF7KQ3Q/ref=cm_sw_r_as_gl_api_gl_i_3JSPXNXKW78X28SBX25S?linkCode=ml2&tag=wokilidotcom-20)** for any **USA or international lines** ,  prepare it for **international travel**, and configure the **Fireguard VPN** to ensure that all connected devices appear to be in your **USA** home location.
 
