@@ -34,14 +34,15 @@ To ensure access to all desired videos, you may need to **switch between non-mon
 2. **Access Account Settings**:
    - Click on your **profile icon** at the top-right corner of the screen.
    - In the dropdown menu, locate and click on **Location**.
-<img width="299" alt="image" src="https://github.com/user-attachments/assets/e37d26d6-bd24-4a85-ac7b-db501085b2d9" />
+     <br><img width="297" alt="image" src="https://github.com/user-attachments/assets/37b52c9e-5ef5-4b52-9e4e-ca2a8c18cb93" />
+
 
 3. **Select a Non-Monetized Country**:
    - From the list, scroll and select a non-monetized country such as:
      - **Belarus**
      - **Nepal**
      - **Kazakhstan**
-<img width="296" alt="image" src="https://github.com/user-attachments/assets/09d6d215-7983-4d6f-8a9c-98aa4837ceea" />
+       <br><img width="296" alt="image" src="https://github.com/user-attachments/assets/09d6d215-7983-4d6f-8a9c-98aa4837ceea" />
 
 4. **Refresh YouTube**:
    - Reload the YouTube page to apply the changes.
