@@ -1,5 +1,5 @@
 
-# 📖 Guide: Setting YouTube Location to Non-Monetized Countries to Avoid Ads
+# 📖 Guide: Avoid Ads Using The Native Yotube App/Website
 
 YouTube ads can be blocked by changing your account's location to a **non-monetized country** where YouTube does not serve ads. Follow this step-by-step guide to configure it on both desktop and mobile devices.
 
