@@ -214,7 +214,9 @@ Server Setup Resources:
 ```bash
 # FROM LAPTOP: SSH into router
 ssh root@192.168.8.1
+```
 
+```bash
 # Force router to use ONLY Cloudflare DNS
 uci set network.wan.peerdns='0'
 uci delete network.wan.dns
@@ -341,13 +343,19 @@ echo 'iptables -I FORWARD -i br-lan ! -o wgclient -j DROP' >> /etc/firewall.user
 ```bash
 # FROM ROUTER: Stop VPN
 ifdown wgclient
+```
 
+```bash
 # FROM LAPTOP: Test internet (should FAIL)
 ping -c 2 8.8.8.8
+```
 
+```bash
 # FROM ROUTER: Restart VPN
 ifup wgclient
+```
 
+```bash
 # FROM LAPTOP: Test again (should WORK)
 ping -c 2 8.8.8.8
 curl -s ifconfig.me  # Should show home IP
@@ -466,14 +474,20 @@ nslookup google.com 1.1.1.1
 ```bash
 # FROM ROUTER:
 wg-quick down wgclient
+```
 
+```bash
 # FROM LAPTOP: Should fail
 ping 8.8.8.8
 curl -s ifconfig.me
+```
 
+```bash
 # FROM ROUTER:
 wg-quick up wgclient
+```
 
+```bash
 # FROM LAPTOP: Should work
 curl -s ifconfig.me
 ```
@@ -543,7 +557,9 @@ tar -czf /root/backups/config_$BACKUP_DATE.tar.gz \
   /etc/config/wireless \
   /etc/firewall.user \
   /etc/sysctl.conf
+```
 
+```bash
 # FROM LAPTOP: Download backup
 scp root@192.168.8.1:/root/backups/config_*.tar.gz ./
 ```
