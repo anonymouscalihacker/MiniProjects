@@ -50,12 +50,33 @@ Alternative: Check your WireGuard config file for the `Endpoint` line - that's y
 
 ## Prerequisites: WireGuard Server Setup
 
-You'll need two routers:
-
-1. **Home Server Router** (can be cheapest model like GL-MT300N-V2)
-2. **Travel Client Router** (recommend higher-end model for better CPU/speed)
+You'll need:
+1. **Travel Client Router** (recommend higher-end model for better CPU/speed)
+2. **One or more WireGuard servers** in different locations
 
 **Note**: WireGuard performance is CPU-dependent. More powerful routers = faster VPN speeds.
+
+### Critical Configuration Tips for Multiple Servers
+
+**DNS STANDARDIZATION**:
+```ini
+# ✅ GOOD - Standardized DNS across all servers
+[Interface]
+Address = 10.0.0.10/32     # Unique IP per server
+DNS = 1.1.1.1              # Same DNS for all configs
+
+# ❌ BAD - Local DNS that causes routing conflicts
+[Interface]
+Address = 192.168.1.10/32
+DNS = 192.168.1.1          # Will fail due to routing conflicts!
+```
+
+**Best Practice Checklist**:
+- ✅ Use Cloudflare DNS (1.1.1.1) in ALL WireGuard configs
+- ✅ Set router DNS to Manual with 1.1.1.1
+- ✅ Enable "Allow Custom DNS to Override VPN DNS"
+- ✅ Avoid 192.168.x.x addresses for WireGuard IPs
+- ✅ Test each server connection independently
 
 Server Setup Resources:
 - [GL.iNet WireGuard Server Setup Video 1](https://www.youtube.com/watch?v=qLEj9zoiYRs)
@@ -123,15 +144,41 @@ Server Setup Resources:
 
 ### DNS Configuration
 
+**For Multiple WireGuard Servers (Recommended)**:
+
 1. Navigate to **Network** → **DNS**
 2. Configure:
    - **Mode**: Manual DNS
-   - **DNS Server 1**: Your home router IP (e.g., `192.168.1.1`)
-   - **DNS Server 2**: Leave empty
+   - **DNS Server 1**: `1.1.1.1`
+   - **DNS Server 2**: `1.0.0.1`
+   - **Allow Custom DNS to Override VPN DNS**: ON ✓
    - **DNS over HTTPS**: OFF
    - **DNS over TLS**: OFF
    - **DNS Rebinding Protection**: OFF
    - Click **Apply**
+
+3. **Update ALL WireGuard configs to use matching DNS**:
+   ```ini
+   # Example: ALL configs should use 1.1.1.1
+   [Interface]
+   Address = 10.0.0.x/32  # Unique for each server
+   DNS = 1.1.1.1          # Same DNS for all
+   PrivateKey = YOUR_KEY
+   
+   [Peer]
+   PublicKey = SERVER_PUBLIC_KEY
+   Endpoint = your-server.com:51820
+   AllowedIPs = 0.0.0.0/0, ::/0
+   PersistentKeepalive = 25
+   ```
+
+**Why This Works Best**:
+- ✅ No routing conflicts between different servers
+- ✅ Consistent DNS behavior across all connections
+- ✅ Fast, reliable Cloudflare DNS
+- ✅ Works from any location globally
+
+**Note**: While this doesn't show your "home ISP" DNS servers, it provides maximum reliability and avoids all the routing conflicts that occur with local DNS servers like 192.168.1.1.
 
 ### Initial Connection Test
 
@@ -144,19 +191,19 @@ Server Setup Resources:
    ```bash
    # Test 1: Check your public IP
    curl -s ifconfig.me
-   # Should show your HOME IP (the one you wrote down)
+   # Should show the IP of whichever WireGuard server you're connected to
 
    # Test 2: Check DNS
    nslookup google.com
-   # Should show Server: 192.168.1.1 (your home router)
+   # Should show DNS server from your WireGuard config
    ```
 
 3. **Browser Quick Test**
    - Visit: https://ipleak.net
-   - IP should show your home location
-   - DNS servers from your home ISP are expected
+   - IP should show your WireGuard server's location
+   - DNS servers should match what's configured in that specific WireGuard profile
 
-**⚠️ STOP if your home IP doesn't appear!**
+**⚠️ STOP if the expected IP doesn't appear!**
 
 ---
 
@@ -168,15 +215,38 @@ Server Setup Resources:
 # FROM LAPTOP: SSH into router
 ssh root@192.168.8.1
 
-# Check current DNS settings
-uci show dhcp.@dnsmasq[0] | grep -E "(server|noresolv|localuse|rebind_protection)"
+# Force router to use ONLY Cloudflare DNS
+uci set network.wan.peerdns='0'
+uci delete network.wan.dns
+uci add_list network.wan.dns='1.1.1.1'
+uci add_list network.wan.dns='1.0.0.1'
+uci commit network
 
-# Add security options (keeping noresolv='0' for VPN endpoint resolution)
+# Configure dnsmasq to use only Cloudflare and ignore ISP DNS
+uci delete dhcp.@dnsmasq[0].server
+uci add_list dhcp.@dnsmasq[0].server='1.1.1.1'
+uci add_list dhcp.@dnsmasq[0].server='1.0.0.1'
+uci set dhcp.@dnsmasq[0].noresolv='1'  # Critical: Ignore ISP DNS
 uci set dhcp.@dnsmasq[0].localuse='1'
-uci set dhcp.@dnsmasq[0].noresolv='0'  # MUST be 0 for DuckDNS/dynamic DNS
 uci commit dhcp
+
+# Restart services
+/etc/init.d/network restart
 /etc/init.d/dnsmasq restart
+
+# Verify configuration
+cat /var/etc/dnsmasq.conf* | grep -E "server=|resolv"
+# Should show:
+# no-resolv
+# server=1.1.1.1
+# server=1.0.0.1
+
+# Check dnsmasq is using correct servers
+logread | grep dnsmasq | grep "using nameserver" | tail -5
+# Should ONLY show 1.1.1.1 and 1.0.0.1
 ```
+
+**Note**: Router will show `Server: 127.0.0.1` when running nslookup locally - this is normal. The important part is that it forwards ONLY to Cloudflare.
 
 **TEST VPN**: Toggle VPN OFF/ON in Web UI, verify it connects
 
@@ -200,13 +270,11 @@ uci set dhcp.lan.ra='disabled'
 uci set dhcp.lan.ra_management='0'
 uci commit dhcp
 
-# Stop IPv6 DHCP service
-/etc/init.d/odhcpd disable
-/etc/init.d/odhcpd stop
-
 # Restart network
 /etc/init.d/network restart
 ```
+
+**Note**: The `odhcpd` service may not exist on all GL.iNet models. The UCI commands above are sufficient to disable IPv6.
 
 **TEST VPN**: Wait 30 seconds, toggle VPN OFF/ON, verify it connects
 
@@ -341,24 +409,38 @@ If you must use Wi-Fi:
 ```bash
 # Test 1: Verify Home IP
 curl -s ifconfig.me
-# Must show your HOME IP
+# Must show your WireGuard server IP
 
 # Test 2: DNS Resolution
 nslookup google.com
-# Server should be 192.168.8.1 or 192.168.1.1
+# Server should be 192.168.8.1
 
 # Test 3: Check all DNS servers (macOS)
 scutil --dns | grep nameserver
-# Should only show your router IPs (no fd00:: addresses)
+# Should show your router IPs (192.168.8.1, possibly IPv6 locals)
 
 # Test 4: Cloudflare DNS leak test
 dig +short txt ch whoami.cloudflare @1.1.1.1
-# Should show your HOME IP
+# Should show your WireGuard server IP
+```
 
-# Test 5: Trace DNS path
-sudo tcpdump -i any -n port 53 -c 10
-# In another terminal: nslookup google.com
-# Should show queries to 192.168.1.1
+**FROM ROUTER TERMINAL:**
+
+```bash
+# Test 5: Verify DNS configuration
+cat /var/etc/dnsmasq.conf* | grep -E "server=|resolv"
+# Must show:
+# no-resolv
+# server=1.1.1.1
+# server=1.0.0.1
+
+# Test 6: Check active DNS servers
+logread | grep dnsmasq | grep "using nameserver" | tail -5
+# Should ONLY show 1.1.1.1 and 1.0.0.1
+
+# Test 7: Direct DNS test
+nslookup google.com 1.1.1.1
+# Should resolve quickly via Cloudflare
 ```
 
 ### Browser Leak Tests
@@ -478,29 +560,60 @@ reboot
 
 ## Troubleshooting Guide
 
-### VPN Won't Connect
+### VPN Won't Connect / Location-Specific Issues
+
+If a WireGuard profile works sometimes but not others:
+
 ```bash
-# Check logs
-logread | grep -i wireguard | tail -20
+# 1. Check for IP conflicts
+ip addr show
+# Look for conflicts with tunnel addresses
 
-# DNS resolution test
+# 2. Clear GL.iNet routing cache
+ip route flush cache
+
+# 3. Restart WireGuard completely
+ifdown wgclient
+sleep 5
+ifup wgclient
+
+# 4. Check DNS resolution
 nslookup your-endpoint.duckdns.org
+# If this fails, your router's DNS might be blocked
 
-# If DNS fails, temporarily set noresolv='0'
-uci set dhcp.@dnsmasq[0].noresolv='0'
-uci commit dhcp
-/etc/init.d/dnsmasq restart
+# 5. For persistent issues, power cycle the router
+reboot
 ```
 
-### Persistent IPv6 Addresses
+**Common Issues by Location**:
+- **Hotels/Corporate Networks**: Often block VPN ports
+- **Mobile Hotspots**: May use strict NAT
+- **Different Countries**: May have different VPN restrictions
+
+**If one server works but another doesn't**:
+1. Check for IP range conflicts (192.168.x.x is problematic)
+2. Try deleting and re-adding the problematic profile
+3. Verify the server is actually online and accessible
+4. Consider using port 443 instead of 51820
+
+### Persistent IPv6 Addresses on macOS
+
+If you still see IPv6 nameservers (fd00::) on macOS:
+
 ```bash
 # Force disable on all interfaces
 for iface in $(ls /sys/class/net/); do
-    echo 1 > /proc/sys/net/ipv6/conf/$iface/disable_ipv6
+    echo 1 > /proc/sys/net/ipv6/conf/$iface/disable_ipv6 2>/dev/null
 done
 
-# Check again
-ip -6 addr show
+# On macOS, disable IPv6 for your network service
+sudo networksetup -setv6off "USB 10/100/1000 LAN"
+# or for Wi-Fi:
+sudo networksetup -setv6off "Wi-Fi"
+
+# Clear DNS cache
+sudo dscacheutil -flushcache
+sudo killall -HUP mDNSResponder
 ```
 
 ### Emergency Recovery
