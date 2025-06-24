@@ -62,12 +62,12 @@ You'll need:
 ```ini
 # ✅ GOOD - Standardized DNS across all servers
 [Interface]
-Address = 10.0.0.10/32     # Unique IP per server
+Address = xxx.x.x.xx/xx    # Unique IP per server
 DNS = 1.1.1.1              # Same DNS for all configs
 
 # ❌ BAD - Local DNS that causes routing conflicts
 [Interface]
-Address = 192.168.1.10/32
+Address = xxx.x.x.xx/xx
 DNS = 192.168.1.1          # Will fail due to routing conflicts!
 ```
 
