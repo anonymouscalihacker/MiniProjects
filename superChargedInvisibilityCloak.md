@@ -217,6 +217,7 @@ ssh root@192.168.8.1
 ```
 
 ```bash
+# FROM ROUTER TERMINAL:
 # Force router to use ONLY Cloudflare DNS
 uci set network.wan.peerdns='0'
 uci delete network.wan.dns
