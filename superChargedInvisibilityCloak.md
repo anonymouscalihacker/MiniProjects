@@ -729,3 +729,99 @@ But these add complexity with minimal security gain for your use case.
 Remember: **One mistake can compromise everything**. Test thoroughly and maintain strict discipline.
 
 **Stay safe and enjoy your travels!**
+
+
+
+---
+
+---
+# Router Privacy Guide: Masking Hostname and Blocking Traceroute
+
+This guide covers two privacy techniques for GL-iNet routers (and similar OpenWrt-based routers) to reduce network fingerprinting and improve anonymity.
+
+## 1. Masking the Hostname (console.gl-inet.com)
+
+By default, your router advertises `console.gl-inet.com` as the reverse-DNS name of `192.168.8.1`. This can reveal your router brand and model to anyone performing network reconnaissance.
+
+### The Problem
+When someone runs a traceroute without the `-n` flag, your router identifies itself as `console.gl-inet.com`, making it obvious you're using a GL-iNet router.
+
+### Solution Options
+
+#### Option A: Simple Hostname Change (Recommended)
+```bash
+uci set system.@system[0].hostname='router'
+uci commit system
+/etc/init.d/system restart
+```
+
+This simple command sequence:
+- Changes your router's hostname to generic "router"
+- Commits the changes to the system configuration
+- Restarts the system service to apply changes
+- Stops the router from identifying as `console.gl-inet.com`
+
+#### Option B: Manual DHCP Configuration Edit
+Alternatively, you can manually edit `/etc/config/dhcp` and replace `console.gl-inet.com` with something generic like `attlocal.net` or just `router`.
+
+**👉 The simple hostname change (Option A) achieves the same result with less complexity.**
+
+## 2. Blocking Traceroute Responses
+
+This technique makes your router "invisible" to traceroute operations by blocking ICMP time-exceeded messages.
+
+### The Commands
+```bash
+iptables -I OUTPUT -p icmp --icmp-type time-exceeded -j DROP
+iptables -I INPUT -p icmp --icmp-type time-exceeded -j DROP
+```
+
+### What These Rules Do
+- **First rule**: Prevents the router from sending "TTL expired" ICMP packets
+- **Second rule**: Prevents the router from accepting "TTL expired" ICMP packets
+- **Combined effect**: Traceroute won't get intermediate hop responses from your router
+
+### Expected Result
+- When running `traceroute 8.8.8.8`, your router (192.168.8.1) won't appear in the trace
+- Instead of showing your router's IP, traceroute will display `* * *` for that hop
+- Your router and network path appear "invisible" to traceroute analysis
+
+## Important Considerations
+
+### Limitations
+- **Local effect only**: This only affects traceroutes originating from your network
+- **Not complete anonymity**: The outside world can still see your public IP and other network characteristics
+- **Diagnostic impact**: These changes may interfere with legitimate network troubleshooting
+
+### Making Changes Persistent
+The iptables rules shown above are temporary and will be lost after a reboot. To make them permanent on OpenWrt:
+
+1. Add the rules to `/etc/firewall.user`
+2. Or use the UCI firewall configuration system
+3. Or create a startup script in `/etc/init.d/`
+
+### Reverting Changes
+
+#### To restore original hostname:
+```bash
+uci set system.@system[0].hostname='GL-MT300N-V2'  # Replace with your original hostname
+uci commit system
+/etc/init.d/system restart
+```
+
+#### To remove iptables rules:
+```bash
+iptables -D OUTPUT -p icmp --icmp-type time-exceeded -j DROP
+iptables -D INPUT -p icmp --icmp-type time-exceeded -j DROP
+```
+
+## Summary
+
+These privacy techniques provide:
+- ✅ Reduced network fingerprinting
+- ✅ Less obvious router identification  
+- ✅ Hidden traceroute responses
+- ⚠️ Limited scope (local network only)
+- ⚠️ Potential diagnostic complications
+
+Use these methods responsibly and be aware that they're part of a broader privacy strategy, not a complete solution for network anonymity.
