@@ -271,10 +271,12 @@ sysctl -p
 uci set dhcp.lan.dhcpv6='disabled'
 uci set dhcp.lan.ra='disabled'
 uci set dhcp.lan.ra_management='0'
+uci set dhcp.lan.ra_slaac='0'
 uci commit dhcp
 
 # Restart network
 /etc/init.d/network restart
+/etc/init.d/dnsmasq restart
 ```
 
 **Note**: The `odhcpd` service may not exist on all GL.iNet models. The UCI commands above are sufficient to disable IPv6.
