@@ -773,6 +773,11 @@ Alternatively, you can manually edit `/etc/config/dhcp` and replace `console.gl-
 This technique makes your router "invisible" to traceroute operations by blocking ICMP time-exceeded messages.
 
 ### The Commands
+while ssh'ed into 192.168.8.1 vi into the firewall.user
+```bash
+vi /etc/firewall.user
+```
+paste this
 ```bash
 iptables -I OUTPUT -p icmp --icmp-type time-exceeded -j DROP
 iptables -I INPUT -p icmp --icmp-type time-exceeded -j DROP
