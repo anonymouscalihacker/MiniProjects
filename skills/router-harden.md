@@ -35,6 +35,7 @@ cat > /etc/firewall.user << 'EOF'
 iptables -C FORWARD -i br-lan ! -o wgclient1 -j DROP 2>/dev/null || iptables -I FORWARD -i br-lan ! -o wgclient1 -j DROP
 iptables -C OUTPUT -o apcli0 -p udp --dport 123 -j DROP 2>/dev/null || iptables -I OUTPUT -o apcli0 -p udp --dport 123 -j DROP
 iptables -C OUTPUT -o eth0 -p udp --dport 123 -j DROP 2>/dev/null || iptables -I OUTPUT -o eth0 -p udp --dport 123 -j DROP
+iptables -C OUTPUT -p icmp -m icmp --icmp-type 11 -j DROP 2>/dev/null || iptables -I OUTPUT -p icmp -m icmp --icmp-type 11 -j DROP
 EOF
 uci set firewall.killswitch=include
 uci set firewall.killswitch.type='script'
@@ -144,17 +145,25 @@ ssh root@192.168.8.1 "iptables -L OUTPUT -n | grep 'icmp type 11'"
 **Pass**: at least one DROP rule for icmptype 11  
 **Fail**: missing
 
-If missing:
-
-```bash
-ssh root@192.168.8.1 "iptables -I OUTPUT -p icmp --icmp-type time-exceeded -j DROP"
-```
-
-Also add to firewall.user for persistence:
+If missing — apply and persist (note: `--icmp-type time-exceeded` does not work on GL.iNet firmware, must use `-m icmp --icmp-type 11`):
 
 ```bash
 ssh root@192.168.8.1 "
-grep -q 'time-exceeded' /etc/firewall.user 2>/dev/null || echo 'iptables -C OUTPUT -p icmp --icmp-type time-exceeded -j DROP 2>/dev/null || iptables -I OUTPUT -p icmp --icmp-type time-exceeded -j DROP' >> /etc/firewall.user
+# Apply immediately
+iptables -I OUTPUT -p icmp -m icmp --icmp-type 11 -j DROP
+
+# Persist in firewall.user
+grep -q 'icmp-type 11' /etc/firewall.user 2>/dev/null || \
+  echo 'iptables -C OUTPUT -p icmp -m icmp --icmp-type 11 -j DROP 2>/dev/null || iptables -I OUTPUT -p icmp -m icmp --icmp-type 11 -j DROP' >> /etc/firewall.user
+"
+```
+
+If duplicates exist (more than one icmptype 11 rule):
+
+```bash
+ssh root@192.168.8.1 "
+while iptables -D OUTPUT -p icmp -m icmp --icmp-type 11 -j DROP 2>/dev/null; do true; done
+iptables -I OUTPUT -p icmp -m icmp --icmp-type 11 -j DROP
 "
 ```
 
