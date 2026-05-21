@@ -19,8 +19,11 @@
    - [Firewall Rules](#firewall-rules)
    - [Block Traceroute Responses](#block-traceroute-responses-privacy-enhancement)
    - [Kill Switch Implementation](#kill-switch-implementation)
+   - [NTP Leak Prevention](#ntp-leak-prevention)
+   - [VPN Watchdog](#vpn-watchdog)
 6. [Phase 3: Device Security](#phase-3-device-security)
    - [Work Laptop Configuration](#work-laptop-configuration)
+   - [MDM & Hardware Considerations](#mdm--hardware-considerations)
    - [Router SSID Configuration](#router-ssid-configuration)
 7. [Phase 4: Comprehensive Testing](#phase-4-comprehensive-testing)
    - [Command Line Tests](#command-line-tests)
@@ -102,6 +105,8 @@ Server Setup Resources:
 - [ ] Clear all saved Wi-Fi networks
 - [ ] Disable Bluetooth
 - [ ] Install WebRTC blocking extension
+- [ ] Disable DNS over HTTPS in browser settings
+- [ ] Check for WWAN/LTE modem and disable in BIOS if present
 
 ### Mobile Device Preparation
 - [ ] Remove work apps or use separate work phone
@@ -356,38 +361,136 @@ Save and apply:
 
 **What this does**: When someone runs `traceroute`, your router won't appear in the trace (shows as `* * *` instead of your IP)
 
+**Note**: On newer GL.iNet firmware this rule may already be in place. Verify with:
+```bash
+iptables -L OUTPUT -n | grep 'icmp type 11'
+```
+
 ### Kill Switch Implementation
 
-```bash
-# FROM ROUTER TERMINAL: Add iptables kill switch
-echo '# Kill switch - block all traffic if VPN is down' > /etc/firewall.user
-echo 'iptables -I FORWARD -i br-lan ! -o wgclient -j DROP' >> /etc/firewall.user
+> **⚠️ Interface Name Warning**: Newer GL.iNet firmware (SDK4) names the WireGuard client interface `wgclient1` instead of `wgclient`. Check yours first:
+> ```bash
+> ip link show | grep wg
+> ```
+> Use whichever name appears (`wgclient` or `wgclient1`) in the commands below.
 
-# Apply
+**Step 1: Write the kill switch script**
+
+```bash
+# FROM ROUTER TERMINAL:
+cat > /etc/firewall.user << 'EOF'
+#!/bin/sh
+# Kill switch - block all LAN traffic if VPN is down
+# Uses -C to check before inserting - prevents duplicate rules on reload
+iptables -C FORWARD -i br-lan ! -o wgclient1 -j DROP 2>/dev/null || iptables -I FORWARD -i br-lan ! -o wgclient1 -j DROP
+
+# Block NTP from leaking your real WAN IP to time servers
+iptables -C OUTPUT -o apcli0 -p udp --dport 123 -j DROP 2>/dev/null || iptables -I OUTPUT -o apcli0 -p udp --dport 123 -j DROP
+iptables -C OUTPUT -o eth0 -p udp --dport 123 -j DROP 2>/dev/null || iptables -I OUTPUT -o eth0 -p udp --dport 123 -j DROP
+EOF
+```
+
+> Replace `wgclient1` with `wgclient` if that is your interface name.
+
+**Step 2: Register the script as a firewall include**
+
+> **Critical**: On newer GL.iNet firmware, `/etc/firewall.user` does NOT run automatically on firewall reload. You must register it explicitly, otherwise the kill switch silently does nothing after a reboot.
+
+```bash
+uci set firewall.killswitch=include
+uci set firewall.killswitch.type='script'
+uci set firewall.killswitch.path='/etc/firewall.user'
+uci set firewall.killswitch.reload='1'
+uci commit firewall
+```
+
+**Step 3: Apply**
+
+```bash
 /etc/init.d/firewall reload
 ```
 
+**Step 4: Verify — exactly one rule should appear**
+
+```bash
+iptables -L FORWARD -n -v | grep 'br-lan'
+# Should show exactly ONE DROP rule for br-lan !wgclient1
+```
+
+> **Duplicate Rule Warning**: If you run the old-style `echo 'iptables -I FORWARD ...' >> /etc/firewall.user` without the `-C` check, every firewall reload stacks another copy of the rule. This causes unpredictable behavior. The idempotent version above (using `-C`) is safe to run multiple times.
+
 **TEST KILL SWITCH**:
 ```bash
-# FROM ROUTER: Stop VPN
-ifdown wgclient
+# FROM ROUTER: Check kill switch is catching traffic
+iptables -Z FORWARD 1   # Zero the counter
+# Wait 30 seconds with devices connected
+iptables -L FORWARD -n -v | head -5
+# Counter on rule 1 should be incrementing - traffic is being caught and dropped
 ```
 
 ```bash
-# FROM LAPTOP: Test internet (should FAIL)
-ping -c 2 8.8.8.8
+# FROM LAPTOP: With VPN down, internet should fail
+ping -c 2 8.8.8.8        # Should fail
+curl -s ifconfig.me       # Should fail or hang
 ```
 
 ```bash
 # FROM ROUTER: Restart VPN
-ifup wgclient
+/etc/init.d/vpn-client restart
 ```
 
 ```bash
-# FROM LAPTOP: Test again (should WORK)
-ping -c 2 8.8.8.8
-curl -s ifconfig.me  # Should show home IP
+# FROM LAPTOP: With VPN up, should work and show home IP
+curl -s ifconfig.me
 ```
+
+### NTP Leak Prevention
+
+By default, your router syncs its clock by sending NTP requests directly over the WAN interface — bypassing the VPN entirely. This reveals your router's real WAN IP to time servers and the upstream hotel/ISP network.
+
+The kill switch script above already includes NTP blocking. To verify it is active:
+
+```bash
+iptables -L OUTPUT -n | grep 'dpt:123'
+# Should show DROP rules for eth0 and apcli0
+```
+
+**Note**: With NTP blocked, your router clock will not auto-sync. This is acceptable and actually desirable — you want the clock locked to your home timezone, not auto-updating to the local timezone wherever you travel.
+
+### VPN Watchdog
+
+The kill switch blocks traffic when the VPN drops, but it does not restart the VPN automatically. Without a watchdog, your internet stays dead until you manually reconnect. This script fixes that.
+
+```bash
+# FROM ROUTER TERMINAL: Create watchdog script
+cat > /usr/bin/vpn-watchdog.sh << 'EOF'
+#!/bin/sh
+# Ping through the VPN tunnel - if no response, restart VPN client
+if ! ping -c 2 -W 5 -I wgclient1 1.1.1.1 >/dev/null 2>&1; then
+    logger -t vpn-watchdog 'VPN tunnel dead - restarting'
+    /etc/init.d/vpn-client restart
+fi
+EOF
+chmod +x /usr/bin/vpn-watchdog.sh
+
+# Add to crontab - runs every 5 minutes
+grep -q vpn-watchdog /etc/crontabs/root 2>/dev/null || \
+  echo '*/5 * * * * /usr/bin/vpn-watchdog.sh' >> /etc/crontabs/root
+
+# Enable and start cron
+/etc/init.d/cron enable
+/etc/init.d/cron restart
+```
+
+> Replace `wgclient1` with your actual interface name if different.
+
+**Verify it is running**:
+```bash
+cat /etc/crontabs/root | grep vpn-watchdog
+/etc/init.d/cron status
+```
+
+**Resource impact**: Negligible. Two ping packets every 5 minutes. The GL-MT3000 and similar routers handle WireGuard encryption continuously — this watchdog is a rounding error by comparison.
 
 ---
 
@@ -415,6 +518,7 @@ curl -s ifconfig.me  # Should show home IP
    - Install WebRTC Leak Prevent extension
    - Disable location permissions
    - Clear cookies/cache before travel
+   - **Disable DNS over HTTPS (DoH)**: Chrome → Settings → Privacy → Security → Use secure DNS → OFF. Firefox → Settings → Network Settings → DNS over HTTPS → OFF. DoH bypasses your router's DNS entirely, leaking queries directly to Google or Cloudflare from the browser.
 
 #### macOS Specific IPv6 Cleanup
 ```bash
@@ -425,6 +529,47 @@ sudo networksetup -setv6off "USB 10/100/1000 LAN"
 sudo dscacheutil -flushcache
 sudo killall -HUP mDNSResponder
 ```
+
+### MDM & Hardware Considerations
+
+#### MDM Software (Jamf, Intune, etc.)
+
+If your employer installed Mobile Device Management software on your work laptop, it can report device location, public IP, and compliance status directly to your company — completely independent of your router setup. The VPN protects network traffic; it does not protect what software running on the device reports.
+
+**Check for MDM**:
+- macOS: Look for **Jamf**, **Kandji**, or **Company Portal** in Applications or System Preferences → Profiles
+- Windows: Settings → Accounts → Access work or school → look for enrolled management
+
+**What MDM can see through your VPN**:
+- Public IP → shows your home IP (handled) ✓
+- WiFi-based location → no WiFi chip = no data ✓
+- Bluetooth beacons → no Bluetooth chip = no data ✓
+
+**What MDM can still see even with VPN**:
+- WWAN/LTE cellular modem (if present) — reports location over cell network, completely bypassing your router
+- System timezone and locale settings
+- Any GPS chip (rare on laptops)
+
+#### Physical Hardware Approach (Maximum Protection)
+
+Removing the WiFi and Bluetooth chips from the work laptop and connecting via Ethernet only is the most effective hardware-level approach:
+
+- No WiFi = no WiFi positioning, no SSID scanning
+- No Bluetooth = no beacon tracking
+- Ethernet through VPN router = all network traffic goes through your tunnel
+- MDM's network reporting sees your home VPN IP
+
+**Check for WWAN/LTE modem** — some business laptops (ThinkPad, Dell Latitude, HP EliteBook) include a cellular modem that operates independently:
+
+```bash
+# macOS
+system_profiler SPModemDataType
+
+# Windows (in PowerShell)
+Get-PnpDevice | Where-Object {$_.FriendlyName -like "*Mobile Broadband*" -or $_.FriendlyName -like "*WWAN*"}
+```
+
+If found, disable it in BIOS/UEFI settings or physically remove the card.
 
 ### Router SSID Configuration
 
@@ -481,6 +626,8 @@ nslookup google.com 1.1.1.1
 
 ### Browser Leak Tests
 
+Run these from your work laptop every time you connect somewhere new — before opening any work apps.
+
 1. **https://ipleak.net**
    - ✅ IP: Your home IP only
    - ✅ DNS: Home ISP/Cloudflare (if home uses it)
@@ -500,23 +647,29 @@ nslookup google.com 1.1.1.1
 ### Kill Switch Verification
 
 ```bash
-# FROM ROUTER:
-wg-quick down wgclient
+# FROM ROUTER: Take VPN interface down
+ip link set wgclient1 down
 ```
 
 ```bash
-# FROM LAPTOP: Should fail
-ping 8.8.8.8
-curl -s ifconfig.me
+# FROM LAPTOP: Should fail immediately
+ping -c 2 8.8.8.8
+curl -s --max-time 5 ifconfig.me
 ```
 
 ```bash
-# FROM ROUTER:
-wg-quick up wgclient
+# FROM ROUTER: Check kill switch caught the traffic
+iptables -L FORWARD -n -v | head -5
+# Packet counter on rule 1 should have incremented
 ```
 
 ```bash
-# FROM LAPTOP: Should work
+# FROM ROUTER: Bring VPN back up
+/etc/init.d/vpn-client restart
+```
+
+```bash
+# FROM LAPTOP: Should work and show home IP
 curl -s ifconfig.me
 ```
 
@@ -526,49 +679,43 @@ curl -s ifconfig.me
 
 ### Hostname Masking (Reduce Network Fingerprinting)
 
-By default, your router advertises `console.gl-inet.com` as its hostname, which reveals your router brand to anyone performing network reconnaissance.
+By default, your router advertises `GL-MT3000` or `console.gl-inet.com` as its hostname, which reveals your router brand to anyone performing network reconnaissance.
 
-```bash
-# FROM ROUTER TERMINAL: Find all instances of GL.iNet hostname
-grep -R "console.gl" /etc/
-
-# You should see /etc/config/dhcp and /etc/ssl/gl.conf (ssl part only on client)
-```
-
-**Method 1: Simple Hostname Change (Recommended)**
+**Recommended: Change to something generic**
 ```bash
 uci set system.@system[0].hostname='router'
 uci commit system
 /etc/init.d/system restart
 ```
 
-**Method 2: Manual DHCP Configuration (Alternative)**
+**Verify**:
 ```bash
-# Edit DHCP config
-vi /etc/config/dhcp
-
-# Find everywhere under "config domain" where hostname is console.gl-inet.com
-# Change to something generic like 'attlocal.net' or 'router'
-
-# Example config:
-# config domain
-#     option name 'attlocal.net'
-#     option ip '192.168.8.1'
+uci get system.@system[0].hostname
+# Should return: router
 ```
 
 ### MAC Address Randomization
+
+Your router's WAN interface uses a factory MAC address with a GL.iNet OUI prefix, identifying the manufacturer to every network you join. Randomizing it prevents hotel/venue networks from tracking your device across visits.
+
 ```bash
-# Generate random MAC
-RANDOM_MAC=$(printf '02:%02X:%02X:%02X:%02X:%02X' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
+# Generate random MAC (locally administered prefix 02: ensures it won't conflict)
+RANDOM_MAC=$(printf '02:%02X:%02X:%02X:%02X:%02X' \
+  $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) \
+  $((RANDOM%256)) $((RANDOM%256)))
 uci set network.wan.macaddr="$RANDOM_MAC"
 uci commit network
 /etc/init.d/network restart
 ```
 
+**Note**: This affects what the hotel/upstream network sees — not your employer. Your employer only sees the VPN IP regardless of MAC address.
+
 ### Traffic Pattern Normalization
+
+> **Skip if your kill switch is in place.** With a working kill switch, all LAN traffic goes through the WireGuard tunnel. The hotel/ISP network only sees encrypted WireGuard UDP — individual packet TTLs from LAN devices are never visible to them. TTL normalization is redundant in this configuration.
+
+If you have a specific reason to apply it anyway:
 ```bash
-# Add to firewall.user
-echo "iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1380" >> /etc/firewall.user
 echo "iptables -t mangle -A POSTROUTING -j TTL --ttl-set 64" >> /etc/firewall.user
 /etc/init.d/firewall reload
 ```
@@ -592,10 +739,16 @@ echo "iptables -t mangle -A POSTROUTING -j TTL --ttl-set 64" >> /etc/firewall.us
 3. **Digital Hygiene**:
    - No real-time social posts
    - No location tags
-   - Maintain home timezone
+   - Maintain home timezone on ALL devices
    - Consistent work patterns
+   - No unusual hours that don't match home timezone
 
-4. **Emergency Protocol**:
+4. **Video Call Discipline**:
+   - Use a virtual background or photo of your home office
+   - Be aware of window light angle revealing time of day
+   - Keep backgrounds consistent
+
+5. **Emergency Protocol**:
    - If VPN fails: Disconnect immediately
    - Use different device/network if critical
    - Report "internet issues" if asked
@@ -604,9 +757,10 @@ echo "iptables -t mangle -A POSTROUTING -j TTL --ttl-set 64" >> /etc/firewall.us
 
 ## Backup and Recovery
 
-### Create Backup
+### Create Full Backup
+
 ```bash
-# FROM ROUTER:
+# FROM ROUTER: Create complete backup including VPN configs
 BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
 mkdir -p /root/backups
 
@@ -615,14 +769,24 @@ tar -czf /root/backups/config_$BACKUP_DATE.tar.gz \
   /etc/config/firewall \
   /etc/config/dhcp \
   /etc/config/wireless \
+  /etc/config/system \
+  /etc/config/wireguard \
+  /etc/config/wireguard_server \
+  /etc/config/ovpnclient \
   /etc/firewall.user \
-  /etc/sysctl.conf
+  /etc/sysctl.conf \
+  /etc/crontabs/root \
+  /usr/bin/vpn-watchdog.sh
+
+echo "Backup created: /root/backups/config_$BACKUP_DATE.tar.gz"
 ```
 
 ```bash
-# FROM LAPTOP: Download backup
-scp root@192.168.8.1:/root/backups/config_*.tar.gz ./
+# FROM LAPTOP: Download backup via SSH pipe (use this if SCP fails)
+ssh root@192.168.8.1 "cat /root/backups/config_*.tar.gz" > ~/Downloads/gl-router-backup.tar.gz
 ```
+
+**What this backup contains**: All network, firewall, DNS, wireless, VPN (WireGuard + OpenVPN) configs, kill switch script, NTP block rules, VPN watchdog, and system settings. Restoring this gets you back to a fully configured state.
 
 ### Emergency Restore
 ```bash
@@ -649,9 +813,7 @@ ip addr show
 ip route flush cache
 
 # 3. Restart WireGuard completely
-ifdown wgclient
-sleep 5
-ifup wgclient
+/etc/init.d/vpn-client restart
 
 # 4. Check DNS resolution
 nslookup your-endpoint.duckdns.org
@@ -672,16 +834,28 @@ reboot
 3. Verify the server is actually online and accessible
 4. Consider using port 443 instead of 51820
 
+### Kill Switch Showing Duplicate Rules
+
+If `iptables -L FORWARD -n | grep br-lan` shows multiple identical DROP rules, the kill switch script ran multiple times without the idempotency check. Fix:
+
+```bash
+# Remove all duplicates
+while iptables -D FORWARD -i br-lan ! -o wgclient1 -j DROP 2>/dev/null; do true; done
+
+# Reload firewall - the idempotent script will add exactly one rule
+/etc/init.d/firewall reload
+
+# Verify exactly one rule remains
+iptables -L FORWARD -n -v | grep br-lan
+```
+
+This only happens with the old-style script. The updated idempotent version (using `-C`) in this guide prevents it.
+
 ### Persistent IPv6 Addresses on macOS
 
 If you still see IPv6 nameservers (fd00::) on macOS:
 
 ```bash
-# Force disable on all interfaces
-for iface in $(ls /sys/class/net/); do
-    echo 1 > /proc/sys/net/ipv6/conf/$iface/disable_ipv6 2>/dev/null
-done
-
 # On macOS, disable IPv6 for your network service
 sudo networksetup -setv6off "USB 10/100/1000 LAN"
 # or for Wi-Fi:
@@ -700,6 +874,8 @@ cp /etc/config/firewall.backup /etc/config/firewall
 
 # Remove kill switch
 rm /etc/firewall.user
+uci delete firewall.killswitch
+uci commit firewall
 /etc/init.d/firewall restart
 ```
 
@@ -709,26 +885,38 @@ rm /etc/firewall.user
 
 ### ⚠️ Potential Detection Vectors
 
-**1. Packet Timing Analysis (Most Likely)**
-- VPN adds latency (~30-50ms)
-- Sophisticated monitoring could detect round-trip delay
-- **Mitigation**: Requires deep packet inspection and correlation
+**1. MDM Software (Highest Risk)**
+- If employer MDM is installed, it can report IP, location, and device posture independently
+- **Mitigation**: Remove WiFi/Bluetooth chips, use Ethernet-only through VPN router, check for and disable WWAN/LTE modem
 
-**2. VPN Protocol Detection**
+**2. DNS over HTTPS in Browser**
+- Chrome and Firefox can bypass your router's DNS using DoH, leaking queries directly to Google/Cloudflare
+- **Mitigation**: Disable DoH in all browsers on work devices
+
+**3. Timezone/Locale Slip**
+- Email headers, calendar invites, and Slack timestamps embed timezone data
+- **Mitigation**: Lock timezone manually on every device, disable auto-update
+
+**4. Packet Timing Analysis**
+- VPN adds latency (~30-50ms to home server)
+- Sophisticated monitoring could detect round-trip delay
+- **Mitigation**: Requires targeted deep packet inspection — unlikely in corporate environments
+
+**5. VPN Protocol Detection**
 - WireGuard has identifiable packet patterns
 - **Mitigation**: Would require specifically looking for VPN usage
 
-**3. Bandwidth/Usage Patterns**
+**6. Bandwidth/Usage Patterns**
 - Sudden bandwidth changes could raise flags
 - **Mitigation**: Maintain normal work patterns
 
-**4. Device Fingerprinting**
+**7. Device Fingerprinting**
 - Browser fingerprints, OS metrics
-- **Mitigation**: Don't install new software or change settings
+- **Mitigation**: Don't install new software or change settings while traveling
 
-**5. Network Reconnaissance**
+**8. Network Reconnaissance**
 - Home network device scans could reveal absence
-- **Mitigation**: Keep some devices at home powered on
+- **Mitigation**: Keep some devices at home powered on (smart plugs, lights on timers)
 
 ### Real-World Assessment
 
@@ -753,7 +941,7 @@ Your setup would fool any standard corporate monitoring. The only improvements w
 
 But these add complexity with minimal security gain for your use case.
 
-**Bottom line**: Unless your healthcare company is doing NSA-level surveillance (they're not), you're golden. Just maintain good OpSec:
+**Bottom line**: Unless your company is doing NSA-level surveillance (they're not), you're golden. Just maintain good OpSec:
 - Keep consistent hours
 - Don't brag about travel
 - Maintain normal work patterns
@@ -763,18 +951,30 @@ But these add complexity with minimal security gain for your use case.
 
 ## Final Security Checklist
 
+### Router
 - [ ] WireGuard shows active connection (`wg show`)
 - [ ] IP shows your home address (`curl ifconfig.me`)
 - [ ] DNS shows your home router (`nslookup google.com`)
 - [ ] Kill switch blocks traffic when VPN down
+- [ ] Kill switch registered as UCI firewall include
+- [ ] No duplicate kill switch rules (`iptables -L FORWARD -n | grep br-lan` shows exactly 1)
+- [ ] NTP leak blocked (`iptables -L OUTPUT -n | grep dpt:123`)
+- [ ] VPN watchdog running (`/etc/init.d/cron status`)
 - [ ] IPv6 completely disabled (`test-ipv6.com` shows 0/10)
-- [ ] All browser leak tests pass
-- [ ] Backup created and stored safely
-- [ ] Timezone set to home
-- [ ] Location services disabled
-- [ ] Wi-Fi disabled on work laptop
-- [ ] Hostname masked (not showing console.gl-inet.com)
+- [ ] Hostname masked (`uci get system.@system[0].hostname` returns generic name)
 - [ ] Traceroute responses blocked
+- [ ] Backup created and stored safely (includes WireGuard configs)
+
+### Work Device
+- [ ] All browser leak tests pass
+- [ ] Timezone set to home — manually, auto-update OFF
+- [ ] Location services disabled
+- [ ] Wi-Fi disabled or chip removed
+- [ ] Bluetooth disabled or chip removed
+- [ ] DNS over HTTPS disabled in browser
+- [ ] WWAN/LTE modem checked and disabled if present
+- [ ] WebRTC blocked (extension or uBlock Origin)
+- [ ] MDM software checked — understand what it can report
 
 ---
 
@@ -783,11 +983,12 @@ But these add complexity with minimal security gain for your use case.
 ✅ **Perfect Setup**:
 - All leak tests show home location only
 - DNS matches your home network exactly
-- Kill switch tested and working
+- Kill switch tested and working — blocks traffic instantly when VPN drops, auto-reconnects via watchdog
 - No IPv6 connectivity
 - Indistinguishable from being at home
 - Router doesn't reveal brand/model in network traces
+- No NTP requests leaking via WAN
 
-Remember: **One mistake can compromise everything**. Test thoroughly and maintain strict discipline.
+Remember: **One mistake can compromise everything**. Test thoroughly before every trip and maintain strict discipline.
 
 **Stay safe and enjoy your travels!**
